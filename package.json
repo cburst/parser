@@ -1,11 +1,5 @@
-{
-  "name": "vercel-parser",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "dependencies": {
-    "@postlight/parser": "^2.2.3"
-  }
+"dependencies": {
+  "@postlight/parser": "^2.2.3",
+  "chrome-aws-lambda": "^10.1.0",
+  "puppeteer-core": "^19.11.1"
 }
