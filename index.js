@@ -1,10 +1,10 @@
 // index.js
-const fs         = require('fs');
-const path       = require('path');
-const chromium   = require('chrome-aws-lambda');
-const Parser     = require('@postlight/parser');
+const fs        = require('fs');
+const path      = require('path');
+const chromium  = require('chrome-aws-lambda');
+const Parser    = require('@postlight/parser');
 
-// 1) Load bypass scripts once
+// 1) Load bypass-paywalls scripts once
 const purifyScript = fs.readFileSync(
   path.join(__dirname, 'bypass', 'purify.min.js'),
   'utf8'
@@ -15,7 +15,7 @@ const bypassScript = fs.readFileSync(
 );
 const injectedScript = purifyScript + '\n' + bypassScript;
 
-// 2) Patterns for blocking paywall bundles (NYT, etc.)
+// 2) Which request URLs to kill (NYT, etc.)
 const paywallPatterns = [
   /meteredBundle/,
   /\/main\.[^.]+\.js$/,
@@ -23,20 +23,30 @@ const paywallPatterns = [
   /watchNext/
 ];
 
+// 3) JSON-LD must have at least this many paragraphs to count
+const MIN_JSON_PARAS = 10;
+
 module.exports = async (req, res) => {
+  // Only GET /parser
   if (req.method !== 'GET') {
-    res.setHeader('Allow','GET');
-    return res.status(405).json({ error: true, message: 'Method Not Allowed' });
+    res.setHeader('Allow', 'GET');
+    return res
+      .status(405)
+      .json({ error: true, message: 'Method Not Allowed' });
   }
 
+  // Must have ?url=
   const rawUrl = req.query.url;
   if (!rawUrl) {
-    return res.status(400).json({ error: true, message: 'Missing ?url= parameter' });
+    return res
+      .status(400)
+      .json({ error: true, message: 'Missing ?url= parameter' });
   }
   const url = decodeURIComponent(rawUrl);
 
   let browser;
   try {
+    // Launch headless Chromium
     browser = await chromium.puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
@@ -45,28 +55,37 @@ module.exports = async (req, res) => {
     });
     const page = await browser.newPage();
 
-    // 3) Intercept & block known paywall scripts
+    // 4) Intercept & block paywall scripts
     await page.setRequestInterception(true);
-    page.on('request', r => {
-      const u = r.url();
-      if (paywallPatterns.some(rx => rx.test(u))) return r.abort();
-      r.continue();
+    page.on('request', request => {
+      const u = request.url();
+      if (paywallPatterns.some(rx => rx.test(u))) {
+        return request.abort();
+      }
+      request.continue();
     });
 
-    // 4) Inject the extension’s bypass + DOMPurify BEFORE any page scripts
+    // 5) Inject bypass + DOMPurify before any site JS
     await page.evaluateOnNewDocument(injectedScript);
 
-    // 5) Fake a real browser UA
+    // 6) Emulate a real browser UA
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
       'AppleWebKit/537.36 (KHTML, like Gecko) ' +
       'Chrome/122.0.0.0 Safari/537.36'
     );
 
-    // 6) Navigate & wait for quiet
+    // 7) Navigate and wait until network is idle
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
-    // 7) Try JSON-LD extraction
+    // 8) Grab full DOM and strip any <link rel="canonical">
+    let dom = await page.content();
+    const cleanedDom = dom.replace(
+      /<link[^>]+rel=(?:'|")canonical(?:'|")[^>]*>/gi,
+      ''
+    );
+
+    // 9) Try extracting full text from JSON-LD
     const jsonLd = await page.evaluate(() => {
       const s = document.querySelector('script[type="application/ld+json"]');
       if (!s) return null;
@@ -75,24 +94,24 @@ module.exports = async (req, res) => {
     });
 
     let html;
-    if (jsonLd && jsonLd.articleBody) {
-      // 8a) Full text from JSON-LD
+    if (
+      jsonLd &&
+      Array.isArray(jsonLd.articleBody?.split) &&
+      jsonLd.articleBody.split('\n\n').length >= MIN_JSON_PARAS
+    ) {
+      // 10a) Use JSON-LD if it’s “long enough”
       html = jsonLd.articleBody
         .split('\n\n')
         .map(p => `<p>${p}</p>`)
         .join('');
     } else {
-      // 8b) Fallback to DOM — but strip <link rel="canonical"> so Parser won’t re-follow
-      let dom = await page.content();
-      html = dom.replace(
-        /<link[^>]+rel=(?:'|")canonical(?:'|")[^>]*>/gi,
-        ''
-      );
+      // 10b) Otherwise fallback to the injected & cleaned DOM
+      html = cleanedDom;
     }
 
     await browser.close();
 
-    // 9) Parse & return
+    // 11) Parse into clean JSON
     const result = await Parser.parse(url, {
       html,
       contentType: 'text/html',
@@ -100,7 +119,7 @@ module.exports = async (req, res) => {
     });
 
     return res.status(200).json(result);
-  } catch(err) {
+  } catch (err) {
     if (browser) {
       try { await browser.close(); } catch {}
     }
