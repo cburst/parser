@@ -1,16 +1,35 @@
 // index.js
-const chromium = require('chrome-aws-lambda');
-const Parser   = require('@postlight/parser');
+const fs        = require('fs');
+const path      = require('path');
+const chromium  = require('chrome-aws-lambda');
+const Parser    = require('@postlight/parser');
+
+// Load & concatenate bypass scripts at startup
+const purifyScript = fs.readFileSync(
+  path.join(__dirname, 'bypass', 'purify.min.js'),
+  'utf8'
+);
+const bypassScript = fs.readFileSync(
+  path.join(__dirname, 'bypass', 'bypass.js'),
+  'utf8'
+);
+const injectedScript = purifyScript + '\n' + bypassScript;
 
 module.exports = async (req, res) => {
+  // Only allow GET
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
-    return res.status(405).json({ error: true, message: 'Method Not Allowed' });
+    return res
+      .status(405)
+      .json({ error: true, message: 'Method Not Allowed' });
   }
 
+  // Validate URL param
   const rawUrl = req.query.url;
   if (!rawUrl) {
-    return res.status(400).json({ error: true, message: 'Missing ?url= parameter' });
+    return res
+      .status(400)
+      .json({ error: true, message: 'Missing ?url= parameter' });
   }
   const url = decodeURIComponent(rawUrl);
 
@@ -25,6 +44,10 @@ module.exports = async (req, res) => {
     });
 
     const page = await browser.newPage();
+
+    // Inject DOMPurify + bypass-paywalls script before any page scripts run
+    await page.evaluateOnNewDocument(injectedScript);
+
     // Emulate a real browser
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
@@ -32,26 +55,36 @@ module.exports = async (req, res) => {
       'Chrome/122.0.0.0 Safari/537.36'
     );
 
-    // Navigate and wait until network is idle
+    // Navigate and wait until network is idle (all resources loaded)
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
-    // Grab the fully rendered HTML
+    // Grab the fully rendered HTML (with paywall stripped)
     const html = await page.content();
+
+    // Close Chromium
     await browser.close();
 
-    // Now parse it
+    // Parse the HTML into clean JSON
     const result = await Parser.parse(url, {
       html,
       contentType: 'text/html',
       fallback: false
     });
 
+    // Return parsed output
     return res.status(200).json(result);
+
   } catch (err) {
-    if (browser) await browser.close();
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
     console.error('Renderer or Parser error:', err);
     return res
       .status(500)
-      .json({ error: true, message: err.message || 'Failed to fetch & parse', failed: true });
+      .json({
+        error: true,
+        message: err.message || 'Failed to fetch & parse',
+        failed: true
+      });
   }
 };
