@@ -1,50 +1,43 @@
 // index.js
-const chromium = require('chrome-aws-lambda');
-const Parser   = require('@postlight/parser');
+const Parser = require('@postlight/parser');
 
 module.exports = async (req, res) => {
+  // Only support GET /parser?url=…
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
-    return res.status(405).json({ error: true, message: 'Method Not Allowed' });
+    return res
+      .status(405)
+      .json({ error: true, message: 'Method Not Allowed' });
   }
 
   const rawUrl = req.query.url;
   if (!rawUrl) {
-    return res.status(400).json({ error: true, message: 'Missing ?url= parameter' });
-  }
-  const url = decodeURIComponent(rawUrl);
-
-  let browser;
-  try {
-    browser = await chromium.puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
-      headless: chromium.headless,
-    });
-
-    const page = await browser.newPage();
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-      'Chrome/122.0.0.0 Safari/537.36'
-    );
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
-    const html = await page.content();
-    await browser.close();
-
-    const result = await Parser.parse(url, {
-      html,
-      contentType: 'text/html',
-      fallback: false
-    });
-
-    return res.status(200).json(result);
-  } catch (err) {
-    if (browser) await browser.close();
-    console.error('Renderer or Parser error:', err);
     return res
+      .status(400)
+      .json({ error: true, message: 'Missing ?url= parameter' });
+  }
+
+  try {
+    const result = await Parser.parse(decodeURIComponent(rawUrl), {
+      contentType: 'text/html',
+      fallback: true,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      },
+    });
+
+    res.status(200).json(result);
+  } catch (err) {
+    console.error('Parse error:', err);
+    res
       .status(500)
-      .json({ error: true, message: err.message || 'Failed to fetch & parse', failed: true });
+      .json({
+        error: true,
+        message: err.message || 'Failed to parse article',
+        failed: true,
+      });
   }
 };
