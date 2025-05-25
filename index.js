@@ -5,13 +5,19 @@ const PORT = process.env.PORT || 3000;
 
 app.get('/parser', async (req, res) => {
   const url = req.query.url;
-  if (!url) return res.status(400).send('Missing ?url= parameter');
+  if (!url) {
+    return res.status(400).send('Missing ?url= parameter');
+  }
 
   try {
     const result = await Mercury.parse(url, {
+      contentType: 'text/html',
+      fallback: true,
       headers: {
-        // Pretend to be a normal browser
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
+        // This is the key part
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
       }
     });
 
