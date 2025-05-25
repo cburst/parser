@@ -6,15 +6,26 @@ const PORT = process.env.PORT || 3000;
 app.get('/parser', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).send('Missing ?url= parameter');
+
   try {
-    const result = await Mercury.parse(url);
+    const result = await Mercury.parse(url, {
+      headers: {
+        // Pretend to be a normal browser
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
+      }
+    });
+
     res.json(result);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Error parsing URL');
+    console.error('Parse error:', err.message || err);
+    res.status(500).json({
+      error: true,
+      message: err.message || 'Failed to parse article',
+      failed: true
+    });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Mercury Parser running on port ${PORT}`);
+  console.log(`Mercury Parser server listening on port ${PORT}`);
 });
